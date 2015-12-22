@@ -42,7 +42,7 @@ public class UrlByHash {
             .reduceByKey((x, y) -> Sets.union(x, y).immutableCopy())
             .filter(p -> p._2().size() > 1)
             .flatMap(p -> p._2().stream().map(s -> new Tuple2<>(p._1(), s)).collect(Collectors.toList()))
-            .map( s -> String.format("%1$x\t%2$s", s._1(), s._2()))
+            .map( s -> String.format("%1$s\t%2$s", s._1(), s._2()))
             .saveAsTextFile(args[1]);
     }
 }
