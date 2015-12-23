@@ -9,15 +9,12 @@ import scala.Tuple2;
 
 import java.net.URL;
 import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
- * Created by Alexey Kutin on 12/22/2015.
+ * Checks how to count unique URLs by hash
  */
 public class UrlByHash {
-
-    private final static Pattern LOG_PATTERN = Pattern.compile("(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.\\d+)Z\\s\\S+\\s(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}):.+\\s\"(?:[A-Z]+)\\s(\\S+)\\sHTTP/");
 
     public static void main(String[] args) {
         if( args.length != 2) {
@@ -30,9 +27,9 @@ public class UrlByHash {
 
         final JavaRDD<String> log = sc.textFile(args[0]);
         log
-            .map(LOG_PATTERN::matcher)
+            .map(WebLogFormat.LOG_PATTERN::matcher)
             .filter(Matcher::find)
-            .map(m -> m.group(3))
+            .map(m -> m.group(WebLogFormat.URL))
             .map(URL::new)
             .map(URL::getPath)
             /* check how unique hashCode is */
@@ -44,5 +41,6 @@ public class UrlByHash {
             .flatMap(p -> p._2().stream().map(s -> new Tuple2<>(p._1(), s)).collect(Collectors.toList()))
             .map( s -> String.format("%1$s\t%2$s", s._1(), s._2()))
             .saveAsTextFile(args[1]);
+        sc.stop();
     }
 }
