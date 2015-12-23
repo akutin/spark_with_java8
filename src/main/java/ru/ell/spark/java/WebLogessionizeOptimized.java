@@ -5,6 +5,7 @@ import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.api.java.function.Function2;
 import scala.Tuple2;
 
 import java.io.Serializable;
@@ -27,23 +28,25 @@ public class WebLogessionizeOptimized {
         final JavaSparkContext sc = new JavaSparkContext(sparkConf);
 
         final JavaRDD<String> log = sc.textFile(args[1]);
-        final JavaPairRDD<String, List<Session>> byIP = log
+        final JavaPairRDD<String, List<Session>> byIp = log
             .map(WebLogFormat.LOG_PATTERN::matcher)
             .filter(Matcher::find)
-            .mapToPair(m -> {
-                final Long time = WebLogFormat.time(m.group(WebLogFormat.TIME));
-                return new Tuple2(
+            .mapToPair(m -> new Tuple2(
                         m.group(WebLogFormat.IP),
                         Lists.newArrayList(
-                                new Session(time, time, new UrlKey(WebLogFormat.path(m.group(WebLogFormat.URL))))
+                                new Session(
+                                        WebLogFormat.time(m.group(WebLogFormat.TIME)),
+                                        UrlKey.valueOf(WebLogFormat.path(m.group(WebLogFormat.URL)))
+                                )
                         )
-                );
-            });
+                )
+            )
+            .reduceByKey( merge(timeout));
 
-        final JavaPairRDD<String, List<Session>> mergedByIP = byIP.reduceByKey((s1, s2) -> merge(s1, s2, timeout));
-        final JavaRDD<Tuple2<String,Session>> flatSessions = mergedByIP.flatMap(
-                ip -> ip._2().stream().map(s -> new Tuple2<>(ip._1(), s)).collect(Collectors.toList())
-        ).filter(s -> s._2().getUrls().size() > 1);
+        final JavaRDD<Tuple2<String,Session>> flatSessions = byIp.flatMap(
+                    ip -> ip._2().stream().filter(s -> s.getUrls().size() > 1).map(s -> new Tuple2<>(ip._1(), s)).collect(Collectors.toList())
+                );
+
 
         flatSessions
 //              .sortBy( t -> t._2().getUrls().size(), false, 1) // by number of hits
@@ -61,9 +64,13 @@ public class WebLogessionizeOptimized {
         private final int hashCode;
         private final int reverseHashCode;
 
-        public UrlKey(String path) {
-            hashCode = path.hashCode();
-            reverseHashCode = new StringBuilder(path).reverse().hashCode();
+        public UrlKey(int hashCode, int reverseHashCode) {
+            this.hashCode = hashCode;
+            this.reverseHashCode = reverseHashCode;
+        }
+
+        public static UrlKey valueOf(String path) {
+            return new UrlKey( path.hashCode(), new StringBuilder(path).reverse().hashCode());
         }
 
         @Override
@@ -85,32 +92,38 @@ public class WebLogessionizeOptimized {
         }
     }
 
-    public static List<Session> merge(List<Session> session1, List<Session> session2, long timeout) {
-        final List<Session> output = new LinkedList<>();
-        final List<Session> sessions = new ArrayList<>(session1.size() + session2.size());
-        sessions.addAll(session1);
-        sessions.addAll(session2);
-        Collections.sort(sessions, (o1, o2) -> o1.getStart().compareTo(o2.getStart()));
+    public static Function2<List<Session>, List<Session>, List<Session>> merge(long timeout) {
+        return (session1,session2) -> {
+            final List<Session> output = new LinkedList<>();
+            final List<Session> sessions = new ArrayList<>(session1.size() + session2.size());
+            sessions.addAll(session1);
+            sessions.addAll(session2);
+            Collections.sort(sessions, (o1, o2) -> o1.getStart().compareTo(o2.getStart()));
 
-        Session previous = sessions.get(0);
-        for (final Session next : sessions.subList(1, sessions.size())) {
-            if (next.getStart() - previous.getEnd() > timeout) {
-                // expired
-                output.add(previous);
-                previous = next;
-            } else {
-                // merge with ongoing
-                previous = Session.merge(previous, next);
+            Session previous = sessions.get(0);
+            for (final Session next : sessions.subList(1, sessions.size())) {
+                if (next.getStart() - previous.getEnd() > timeout) {
+                    // expired
+                    output.add(previous);
+                    previous = next;
+                } else {
+                    // merge with ongoing
+                    previous = Session.merge(previous, next);
+                }
             }
-        }
-        output.add(previous);
-        return output;
+            output.add(previous);
+            return output;
+        };
     }
 
     public static class Session implements Serializable {
         private final Long start;
         private final Long end;
         private final Set<UrlKey> urls;
+
+        public Session(Long start, UrlKey startUrl) {
+            this( start, start, startUrl);
+        }
 
         public Session(Long start, Long end, UrlKey startUrl) {
             this.start = start;
